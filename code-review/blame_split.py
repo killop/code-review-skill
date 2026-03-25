@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-code-review blame & split tool
+代码追溯与拆分工具
 从 FULL_REPORT.md 中解析问题，通过 git blame 追溯作者，
-生成带作者标注的报告 + 按作者拆分的独立文件。
+生成带作者标注的报告，并按作者拆分为独立文件。
 
 用法：
   python blame_split.py --root <仓库根目录> --report <FULL_REPORT.md路径> --config <config.json路径>
@@ -32,7 +32,7 @@ ENC = dict(text=True, encoding="utf-8", errors="ignore")
 # ── 解析 ──────────────────────────────────────────────
 
 def parse_issues(md_path: Path):
-    """从 FULL_REPORT.md 解析所有问题块"""
+    """从 FULL_REPORT.md 解析所有问题块。"""
     text = md_path.read_text(encoding="utf-8")
     lines = text.splitlines()
     issues = []
@@ -85,7 +85,7 @@ def parse_issues(md_path: Path):
 # ── git 索引 ──────────────────────────────────────────
 
 def build_tracked_index(root: Path):
-    """构建仓库文件索引，支持多种路径匹配策略"""
+    """构建仓库文件索引，支持多种路径匹配策略。"""
     r = subprocess.run(
         ["git", "ls-files"], cwd=root, capture_output=True, timeout=30, **ENC
     )
@@ -104,8 +104,8 @@ def build_tracked_index(root: Path):
     return tracked, tracked_set, tracked_lower, suffix_index
 
 
-def resolve_file(file_field, root, tracked_set, tracked_lower, suffix_index, tracked):
-    """智能解析文件路径，支持完整路径/前缀补全/后缀匹配/basename兜底"""
+def resolve_file(file_field, root, tracked_set, tracked_lower, suffix_index, tracked, prefixes):
+    """智能解析文件路径，支持完整路径、前缀补全、后缀匹配和文件名兜底。"""
     candidates = re.findall(r"[A-Za-z0-9_./\\-]+\.\w+", file_field)
     if not candidates:
         return None
@@ -126,16 +126,7 @@ def resolve_file(file_field, root, tracked_set, tracked_lower, suffix_index, tra
             rp = str(direct.relative_to(root)).replace("\\", "/")
             return tracked_lower.get(rp.lower(), rp)
 
-        # 3. 常见前缀补全
-        prefixes = [
-            "Assets/Scripts/HotFix/Runtime/",
-            "Assets/Scripts/HotFix/Runtime/Lua2CSharpCode/",
-            "Assets/Scripts/HotFix/Runtime/Lua2CSharpCode/GameModule/",
-            "Assets/Scripts/HotFix/Runtime/Lua2CSharpCode/GameNet/",
-            "Assets/Scripts/HotFix/Runtime/Lua2CSharpCode/Common/",
-            "Assets/Scripts/HotFix/Runtime/Lua2CSharpCode/GameData/",
-            "Assets/Scripts/HotFix/Runtime/Lua2CSharpCode/GameView/",
-        ]
+        # 3. 配置中的目标目录前缀补全
         for pre in prefixes:
             full = (pre + c).replace("\\", "/")
             if full.lower() in tracked_lower:
@@ -161,13 +152,13 @@ def resolve_file(file_field, root, tracked_set, tracked_lower, suffix_index, tra
 # ── blame ─────────────────────────────────────────────
 
 def parse_start_line(line_field):
-    """从行号字段提取起始行号，支持范围/中文前缀等格式"""
+    """从行号字段提取起始行号，支持范围、中文前缀等格式。"""
     m = re.search(r"\d+", line_field)
     return int(m.group(0)) if m else None
 
 
 def blame_author(root, path, line_no, timeout=10):
-    """git blame 单行，返回作者名"""
+    """对单行执行 git blame，返回作者名。"""
     try:
         r = subprocess.run(
             ["git", "blame", "-L", f"{line_no},{line_no}",
@@ -184,7 +175,7 @@ def blame_author(root, path, line_no, timeout=10):
 
 
 def fallback_author(root, path, timeout=10):
-    """blame 失败时，用 git log 获取最后修改者"""
+    """blame 失败时，使用 git log 获取最后修改者。"""
     try:
         r = subprocess.run(
             ["git", "log", "-1", "--format=%an", "--", path],
@@ -198,14 +189,43 @@ def fallback_author(root, path, timeout=10):
 
 
 def normalize_author(name, alias_map):
-    """作者名归一化"""
+    """作者名归一化。"""
     return alias_map.get(name, name)
 
 
 # ── 主流程 ────────────────────────────────────────────
 
+def load_prefixes(cfg, root):
+    prefixes = []
+    for d in cfg.get("target", {}).get("directories", []):
+        if not d:
+            continue
+        p = str(d).replace("\\", "/").strip()
+        if not p:
+            continue
+        prefixes.append(p.rstrip("/") + "/")
+    if not prefixes:
+        prefixes = [str(root).replace("\\", "/").rstrip("/") + "/"]
+    return prefixes
+
+
+def read_target_directories(cfg, root):
+    dirs = cfg.get("target", {}).get("directories", [])
+    result = []
+    for d in dirs:
+        if not d:
+            continue
+        p = Path(d)
+        if not p.is_absolute():
+            p = (root / p).resolve()
+        result.append(p)
+    if not result:
+        result = [root]
+    return result
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Code review blame & split")
+    parser = argparse.ArgumentParser(description="代码追溯与拆分工具")
     parser.add_argument("--root", required=True, help="仓库根目录")
     parser.add_argument("--report", required=True, help="FULL_REPORT.md 路径")
     parser.add_argument("--config", default="", help="config.json 路径（可选）")
@@ -220,11 +240,15 @@ def main():
 
     # 加载作者别名
     alias_map = {}
+    prefixes = []
     if args.config and Path(args.config).exists():
         cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
         alias_map = cfg.get("output", {}).get("author_alias", {})
+        prefixes = load_prefixes(cfg, root)
+    else:
+        prefixes = [str(root).replace("\\", "/").rstrip("/") + "/"]
 
-    print(f"[1/5] 解析问题...")
+    print(f"[1/5] 正在解析问题...")
     issues, original_lines = parse_issues(report_path)
     print(f"      找到 {len(issues)} 个问题")
 
@@ -232,11 +256,11 @@ def main():
         print("没有找到问题，退出。")
         return
 
-    print(f"[2/5] 构建文件索引...")
+    print(f"[2/5] 正在构建文件索引...")
     tracked, tracked_set, tracked_lower, suffix_index = build_tracked_index(root)
     print(f"      索引了 {len(tracked)} 个文件")
 
-    print(f"[3/5] 逐问题 git blame...")
+    print(f"[3/5] 正在逐问题执行 git blame...")
     assignments = []
     author_counter = Counter()
     for idx, it in enumerate(issues, 1):
@@ -248,17 +272,17 @@ def main():
         if not it["file_field"]:
             reason = "文件字段为空"
         elif start_line is None:
-            # 没有行号，直接用 git log fallback
+            # 没有行号，直接使用 git log 回退
             resolved = resolve_file(
-                it["file_field"], root, tracked_set, tracked_lower, suffix_index, tracked
+                it["file_field"], root, tracked_set, tracked_lower, suffix_index, tracked, prefixes
             )
             if resolved:
                 author = fallback_author(root, resolved)
             if not author:
-                reason = "行号缺失且fallback失败"
+                reason = "行号缺失且回退失败"
         else:
             resolved = resolve_file(
-                it["file_field"], root, tracked_set, tracked_lower, suffix_index, tracked
+                it["file_field"], root, tracked_set, tracked_lower, suffix_index, tracked, prefixes
             )
             if not resolved:
                 reason = "文件路径无法解析"
@@ -267,7 +291,7 @@ def main():
                 if not author:
                     author = fallback_author(root, resolved)
                 if not author:
-                    reason = "blame和fallback均失败"
+                    reason = "blame 和回退均失败"
 
         if author:
             author = normalize_author(author, alias_map)
@@ -288,12 +312,12 @@ def main():
             print(f"      {idx}/{len(issues)} done")
 
     # ── 更新 FULL_REPORT.md：标题追加作者 ──
-    print(f"[4/5] 更新报告...")
+    print(f"[4/5] 正在更新报告...")
     # 按行号倒序修改，避免偏移
     for a in sorted(assignments, key=lambda x: x["title_line_idx"], reverse=True):
         li = a["title_line_idx"]
         old_title = original_lines[li]
-        # 去掉已有的作者标注（防止重复运行）
+        # 去掉已有的作者标注，防止重复运行
         old_title = re.sub(r"\s*【作者[:：]\s*[^】]+】", "", old_title)
         original_lines[li] = f"{old_title} 【作者: {a['author']}】"
 
@@ -339,7 +363,7 @@ def main():
         print(f"      SUMMARY.md 已更新")
 
     # ── 按作者拆分文件 ──
-    print(f"[5/5] 按作者拆分...")
+    print(f"[5/5] 正在按作者拆分...")
     by_author = defaultdict(list)
     for a in assignments:
         by_author[a["author"]].append(a)
@@ -393,7 +417,7 @@ def main():
         f.write(f"- 未归属数量：{len(by_author.get('未归属', []))}\n")
 
     unattr = len(by_author.get("未归属", []))
-    print(f"\n完成！{len(issues)} 个问题，{len(by_author)} 位作者，{unattr} 个未归属")
+    print(f"\n完成！共 {len(issues)} 个问题，{len(by_author)} 位作者，{unattr} 个未归属")
 
 
 if __name__ == "__main__":

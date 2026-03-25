@@ -1,6 +1,6 @@
 # Code Review Skill
 
-自动化代码审核技能，适用于大型 Unity/C# 项目的定期代码质量审查。
+自动化代码审核技能，适用于通用代码工程的定期代码质量审查。
 
 ## 快速开始
 
@@ -8,7 +8,7 @@
 /code-review
 ```
 
-首次运行时，如果不存在 `code-review/config.json`，会交互式询问审核参数。后续运行自动读取配置。
+首次运行时，如果不存在 `AiDoc/CodeReview/config.json`，会交互式询问审核参数。后续运行自动读取配置。
 
 ## 工作流程
 
@@ -18,7 +18,7 @@
 
 | 阶段 | 说明 | 预计耗时 |
 |------|------|----------|
-| 0 | 读取 `config.json`，创建输出目录 | < 1 min |
+| 0 | 读取 `config.json`，创建输出目录（`检查时间@开始日期@结束日期`） | < 1 min |
 | 1 | `git log` 获取变更文件列表，过滤后缀/排除目录 | 5-10 min |
 | 2 | 按业务模块分组，单模块不超过 `max_files_per_module` 个文件 | 5-10 min |
 | 3 | 多 agent 并行审查各模块，生成 `review_*.md` | 视模块数，20+ 模块约 2-3 h |
@@ -27,19 +27,19 @@
 
 ## 配置文件
 
-路径：`code-review/config.json`
+路径：`AiDoc/CodeReview/config.json`
 
 ```jsonc
 {
   "target": {
-    "directories": ["Assets/Scripts/HotFix/Runtime"],   // 审核目标目录
-    "file_extensions": [".cs"],                          // 目标文件后缀
-    "exclude_directories": ["Runtime/Generate"],         // 排除目录
+    "directories": ["<target-directories>"],           // 审核目标目录
+    "file_extensions": [".cs"],                         // 目标文件后缀
+    "exclude_directories": ["<exclude-directories>"],    // 排除目录
     "exclude_file_patterns": ["*.meta", "*.Designer.cs"] // 排除文件模式
   },
   "git": {
     "since": "2026-01-17",  // git log 起始日期
-    "branch": ""            // 空 = 当前分支
+    "branch": ""             // 空 = 当前分支
   },
   "review": {
     "max_files_per_module": 30,  // 超过此数拆分为 Part1/Part2
@@ -84,15 +84,15 @@
 
 ## 输出结构
 
-每次审核生成带时间戳的独立目录，历次结果互不干扰：
+每次审核生成带范围信息的独立目录，历次结果互不干扰：
 
 ```
-code-review/
+AiDoc/CodeReview/
 ├── config.json
 ├── 2026-03-19_143000/
 │   ├── module_commits.md        # 模块划分与变更文件清单
-│   ├── review_Logic.md          # 各模块审查报告
-│   ├── review_UI_Main.md
+│   ├── review_ModuleA.md        # 各模块审查报告
+│   ├── review_ModuleB.md
 │   ├── review_*.md
 │   ├── SUMMARY.md               # 汇总摘要 + 作者统计表
 │   ├── FULL_REPORT.md           # 完整报告（含作者标注）
@@ -101,7 +101,7 @@ code-review/
 │       ├── VERIFY.md            # 一致性校验（条目数 + 内容哈希）
 │       ├── bugs_zhangsan.md     # 各作者的问题清单
 │       └── bugs_未归属.md       # 无法追溯的问题
-└── 2026-04-15_100000/
+└── 202601261245@20260125@20260126/
     └── ...
 ```
 
@@ -111,9 +111,9 @@ code-review/
 
 ```bash
 python .agents/skills/code-review/blame_split.py \
-  --root . \
-  --report code-review/2026-03-20_120242/FULL_REPORT.md \
-  --config code-review/config.json
+  --root <repo-root> \
+  --report <output-dir>/FULL_REPORT.md \
+  --config AiDoc/CodeReview/config.json
 ```
 
 ### 功能
@@ -137,9 +137,11 @@ python .agents/skills/code-review/blame_split.py \
 { "git": { "since": "2026-03-01" } }
 ```
 
+`target.directories` 就是这次审核/追溯的范围，填你的仓库里实际要检查的目录即可。
+
 **只跑作者追溯** — 如果审查报告已存在，只需补跑阶段 5：
 ```bash
-python .agents/skills/code-review/blame_split.py --root . --report <FULL_REPORT路径> --config code-review/config.json
+python .agents/skills/code-review/blame_split.py --root <repo-root> --report <FULL_REPORT路径> --config AiDoc/CodeReview/config.json
 ```
 
 **对比趋势** — 不同日期的输出在各自目录下，可直接对比问题数量变化。

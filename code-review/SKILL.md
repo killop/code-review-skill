@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: 对指定代码目录进行全量代码审核，按模块分批审查，生成问题报告并追溯问题作者。适用于大型 Unity/C# 项目的定期代码质量审查。
+description: 对指定代码目录进行全量代码审核，按模块并行subagent方式分批审查，生成问题报告并追溯问题作者。适用于通用代码工程的定期代码质量审查。
 license: MIT
 metadata:
   author: internal
@@ -16,7 +16,7 @@ metadata:
 
 ## 配置文件
 
-审核启动时，首先读取项目根目录下 `code-review/config.json` 配置文件。
+审核启动时，首先读取项目根目录下 `AiDoc/CodeReview/config.json` 配置文件。
 
 ### config.json 结构
 
@@ -52,7 +52,7 @@ metadata:
 
 ### 配置加载逻辑
 
-1. 检查 `code-review/config.json` 是否存在
+1. 检查 `AiDoc/CodeReview/config.json` 是否存在
 2. **如果存在**：读取并解析配置，从中获取��标目录、文件后缀、排除项、时间范围等参数
 3. **如果不存在**：询问用户以下信息，然后按用户回答执行：
    - 审核的目标目录
@@ -64,10 +64,10 @@ metadata:
 
 ## 输出目录
 
-每次审核的结果存放在 `code-review/` 下以执行时间命名的子目录中：
+每次审核的结果存放在 `AiDoc/CodeReview/` 下以执行时间命名的子目录中：
 
 ```
-code-review/
+AiDoc/CodeReview/
 ├── config.json
 ├── 2026-03-19_143000/          # 本次审核结果
 │   ├── SUMMARY.md
@@ -78,7 +78,7 @@ code-review/
 │   └── ...
 ```
 
-目录命名格式：`YYYY-MM-DD_HHmmss`，使用审核开始时的本地时间。
+目录命名格式：`YYYYMMDDHHmm@开始日期@结束日期`，例如 `202601261245@20260125@20260126`。检查时间使用审核开始时的本地时间，开始日期和结束日期使用审核范围对应的日期。
 
 在阶段1开始时，立即创建本次输出目录，后续所有产物写入该目录。
 
@@ -107,7 +107,7 @@ code-review/
 **目标**：读取配置文件，确定审核参数。
 
 **操作**：
-1. 读取 `code-review/config.json`
+1. 读取 `AiDoc/CodeReview/config.json`
 2. 如果文件不存在，询问用户审核参数（目标目录、文件后缀、排除目录、时间范围）
 3. 从配置中提取：
    - `TARGET_DIRS`：目标目录列表
@@ -118,7 +118,7 @@ code-review/
    - `MAX_FILES_PER_MODULE`：单模块最大文件数
    - `PARALLEL_AGENTS`：并行 agent 数量
    - `AUTHOR_ALIAS`：作者名映射表
-4. 创建本次输出目录：`code-review/YYYY-MM-DD_HHmmss/`
+4. 创建本次输出目录：`AiDoc/CodeReview/YYYYMMDDHHmm@开始日期@结束日期/`
 
 **输出**：审核参数 + 输出目录路径
 
@@ -161,19 +161,19 @@ code-review/
 
 ---
 
-## 阶段3: 逐模块代码审查
+## 阶段3: 逐模块多subagent代码审查
 
 **目标**：对每个模块的变更文件进行深度代码审查，发现逻辑错误和性能问题。
 
 **操作**：
 
-1. 按模块逐个审查，每个模块生成一个独立的审查报告（如 `{输出目录}/review_GameBattle.md`）
+0. **强制要求**：阶段3必须启动 subagent 执行，不允许主会话直接完成模块审查。
+1. 按模块逐个审查，每个模块启动一到多个subagent生成一个独立的审查报告（如 `{输出目录}/review_GameBattle.md`）
 2. 对每个模块：
    - 读取该模块所有变更文件的完整代码
    - 按配置中 `review.focus` 定义的问题类型重点关注
 
 **逻辑错误类（高优先级）**：
-- 空引用风险（未判空直接访问）
 - 数组/字典越界访问
 - 除零风险
 - 类型转换异常
@@ -181,7 +181,7 @@ code-review/
 - 循环中修改集合
 - 条件判断逻辑错误（运算符优先级、短路求值）
 - 多线程/重入安全问题
-- 资源未释放（Timer、异步操作、GameObject）
+- 资源未释放（Timer、异步操作、对象/句柄）
 
 **性能问题类（中优先级）**：
 - 热路径上的 LINQ/ToList() 产生 GC 分配
@@ -198,19 +198,20 @@ code-review/
 - 文件：完整文件路径
 - 行号：具体行号或行号范围
 - 问题代码：（贴出关键代码片段）
-- 问题类型：逻��错误 / 性能问题
+- 问题类型：逻辑错误 / 性能问题
 - 描述：问题的具体说明和修复建议
 ```
 
 4. 如果模块文件太多（超过 `MAX_FILES_PER_MODULE`），拆分为多个 Part 分批审查
-5. 使用最多 `PARALLEL_AGENTS` 个并行 agent 同时审查不同模块
+5. 必须使用 并行 subagent 同时审查不同模块
+6. 若 subagent 不可用或执行失败，阶段3必须立即中止并报告阻塞原因，禁止降级为主会话直审
 
 **输出**：每个模块一个 `review_模块名.md` 文件，存放在输出目录下
 
 ### 踩坑提醒
 - 单次读取的文件不要太多，容易超出上下文窗口。建议每次读取 5-10 个文件
 - 对于超大文件（>1000行），可以分段读取，重点看变更相关的部分
-- Lua 转 C# 的代码（Lua2CSharpCode）有特殊模式，需要特别注意
+- 脚本生成代码、跨语言桥接代码或自动生成代码有特殊模式，需要特别注意
 - 审查时注意区分"确定的 bug"和"代码风格问题"，只报告前者
 
 ---
@@ -251,7 +252,7 @@ code-review/
 python .agents/skills/code-review/blame_split.py \
   --root . \
   --report {输出目录}/FULL_REPORT.md \
-  --config code-review/config.json
+  --config AiDoc/CodeReview/config.json
 ```
 
 脚本自动完成以下工作：
@@ -284,9 +285,9 @@ python .agents/skills/code-review/blame_split.py \
 ## 最终产物清单
 
 ```
-code-review/
+AiDoc/CodeReview/
 ├── config.json                         # 审核配置
-└── YYYY-MM-DD_HHmmss/                  # 本次审核结果目录
+└── YYYYMMDDHHmm@开始日期@结束日期/      # 本次审核结果目录
     ├── module_commits.md               # 模块划分与提交记录
     ├── review_*.md                     # 各模块审查报告
     ├── SUMMARY.md                      # 汇总摘要（含作者统计）
@@ -302,7 +303,7 @@ code-review/
 
 ## 执行建议
 
-1. **并行审查**：模块之间互相独立，可以用多个 agent 并行审查不同模块
+1. **并行审查（强制）**：模块之间互相独立，必须用多个 subagent 并行审查不同模块 **spawn a subagent per module**
 2. **增量审核**：下次审核时修改 config.json 中的 `git.since` 日期即可只审查新增变更
 3. **历史对比**：不同时间的审核结果在各自的时间目录下，方便对比代码质量趋势
 4. **作者追溯优先脚本化**：阶段5 优先运行 `blame_split.py`，不要用自然语言逐条 blame，除非是极少量问题的临时分析
